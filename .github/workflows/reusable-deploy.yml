@@ -1,0 +1,145 @@
+name: Reusable Deploy Workflow
+concurrency: ${{ inputs.concurrency-group }}
+
+on:
+  workflow_call:
+    inputs:
+      service:
+        description: 'Service name (ECR repository)'
+        required: true
+        type: string
+      concurrency-group:
+        description: 'Concurrency group to prevent parallel deployments'
+        required: false
+        type: string
+        default: deployment
+      extra-args:
+        description: 'Additional Docker build arguments'
+        required: false
+        type: string
+      working-directory:
+        description: 'Working directory containing Dockerfile'
+        required: false
+        type: string
+      dockerfile:
+        description: 'Path to Dockerfile relative to working-directory'
+        required: false
+        type: string
+        default: Dockerfile
+      ssm-path:
+        description: 'AWS SSM parameter path to load as environment variables'
+        required: false
+        type: string
+      aws-region:
+        description: 'AWS region'
+        required: false
+        type: string
+        default: eu-central-1
+      image-tag:
+        description: 'Image tag to use (defaults to github.sha)'
+        required: false
+        type: string
+      enable-cache:
+        description: 'Enable Docker layer caching'
+        required: false
+        type: boolean
+        default: true
+    secrets:
+      AWS_ACCESS_KEY_ID:
+        required: false
+      AWS_SECRET_ACCESS_KEY:
+        required: false
+      PAT:
+        required: false
+
+    outputs:
+      image-tag:
+        description: 'Docker image tag that was built'
+        value: ${{ jobs.deploy.outputs.image-tag }}
+      image-uri:
+        description: 'Full ECR image URI'
+        value: ${{ jobs.deploy.outputs.image-uri }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    outputs:
+      image-tag: ${{ steps.set-outputs.outputs.image-tag }}
+      image-uri: ${{ steps.set-outputs.outputs.image-uri }}
+    steps:
+      - name: Git Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+          token: ${{ secrets.PAT || github.token }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ inputs.aws-region }}
+
+      - name: Set AWS SSM to environment variables
+        uses: Bardavon-Health/actions-aws-ssm-params-to-env@v1.4.0
+        if: ${{ inputs.ssm-path }}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ inputs.aws-region }}
+        with:
+          ssm-path: ${{ inputs.ssm-path }}
+          decryption: true
+          get-children: true
+          mask-values: true
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag, and push image to Amazon ECR
+        shell: bash
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ inputs.service }}
+          IMAGE_TAG: ${{ inputs.image-tag || github.sha }}
+          GH_PERSONAL_ACCESS_TOKEN: ${{ secrets.PAT }}
+          ENABLE_CACHE: ${{ inputs.enable-cache }}
+        working-directory: ${{ inputs.working-directory || inputs.service }}
+        run: |
+          # Pull latest for cache if enabled
+          if [ "$ENABLE_CACHE" == "true" ]; then
+            echo "Pulling latest image for layer caching..."
+            docker pull $ECR_REGISTRY/$ECR_REPOSITORY:latest || echo "No cached image found"
+          fi
+
+          # Prepare cache argument
+          CACHE_ARG=""
+          if [ "$ENABLE_CACHE" == "true" ]; then
+            CACHE_ARG="--cache-from $ECR_REGISTRY/$ECR_REPOSITORY:latest"
+          fi
+
+          # Build and tag
+          docker build \
+            ${{ inputs.extra-args }} \
+            --build-arg GH_PERSONAL_ACCESS_TOKEN="$GH_PERSONAL_ACCESS_TOKEN" \
+            $CACHE_ARG \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:latest \
+            -f ${{ inputs.dockerfile }} .
+
+          # Push all tags
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY --all-tags
+
+          echo "✅ Image pushed: $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+
+      - name: Set outputs
+        id: set-outputs
+        shell: bash
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ inputs.service }}
+          IMAGE_TAG: ${{ inputs.image-tag || github.sha }}
+        run: |
+          echo "image-tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+          echo "image-uri=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT

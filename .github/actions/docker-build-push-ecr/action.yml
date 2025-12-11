@@ -19,6 +19,18 @@ inputs:
     description: 'Name of the binary artifact to download'
     required: false
     default: ''
+  dockerfile:
+    description: 'Path to Dockerfile relative to working-directory'
+    required: false
+    default: 'Dockerfile'
+  extra-args:
+    description: 'Additional Docker build arguments'
+    required: false
+    default: ''
+  enable-cache:
+    description: 'Enable Docker layer caching from latest tag'
+    required: false
+    default: 'true'
 
 outputs:
   image-tag:
@@ -48,6 +60,16 @@ runs:
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
 
+    - name: Pull latest image for cache (if enabled)
+      if: inputs.enable-cache == 'true'
+      shell: bash
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        ECR_REPOSITORY: ${{ inputs.ecr-repository }}
+      run: |
+        echo "Pulling latest image for layer caching..."
+        docker pull $ECR_REGISTRY/$ECR_REPOSITORY:latest || echo "No cached image found, building from scratch"
+
     - name: Build and push Docker image to ECR
       shell: bash
       working-directory: ${{ inputs.working-directory }}
@@ -68,17 +90,21 @@ runs:
           fi
         done
 
-        # Build the image
-        docker build $TAGS -f Dockerfile .
+        # Prepare cache-from argument
+        CACHE_ARG=""
+        if [ "${{ inputs.enable-cache }}" == "true" ]; then
+          CACHE_ARG="--cache-from $ECR_REGISTRY/$ECR_REPOSITORY:latest"
+        fi
 
-        # Push all tags
-        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-        for tag in "${ADDITIONAL_TAGS[@]}"; do
-          tag=$(echo "$tag" | xargs)
-          if [ -n "$tag" ]; then
-            docker push $ECR_REGISTRY/$ECR_REPOSITORY:$tag
-          fi
-        done
+        # Build the image with cache and extra args
+        docker build \
+          ${{ inputs.extra-args }} \
+          $CACHE_ARG \
+          $TAGS \
+          -f ${{ inputs.dockerfile }} .
+
+        # Push all tags at once
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY --all-tags
 
         echo "Image pushed: $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
 

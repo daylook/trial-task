@@ -64,29 +64,16 @@ jobs:
   ## Build and Push Docker Image to ECR
   docker:
     needs: build-and-test
-    runs-on: ubuntu-latest
-    permissions:
-      id-token: write  # Required for AWS OIDC
-      contents: read
-    outputs:
-      image-tag: ${{ steps.docker-push.outputs.image-tag }}
-      image-uri: ${{ steps.docker-push.outputs.image-uri }}
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-
-      - name: Build and push Docker image
-        id: docker-push
-        uses: ./.github/actions/docker-build-push-ecr
-        with:
-          ecr-repository: ${{ env.ECR_REPOSITORY }}
-          working-directory: web-app
-          image-tag: ${{ github.sha }}
-          additional-tags: ${{ github.ref_name }},latest
-          artifact-name: web-app-binary
+    uses: ./.github/workflows/reusable-deploy.yml
+    with:
+      service: web-app
+      working-directory: web-app
+      dockerfile: Dockerfile
+      aws-region: eu-central-1
+      enable-cache: true
+      concurrency-group: web-app-docker-build
+      # extra-args: '--build-arg NODE_ENV=production'
+    secrets: inherit
 
   ## Deploy to EKS with Helm
   deploy:
@@ -120,7 +107,7 @@ jobs:
           values-file: ./helm/web-app/values-production.yaml
           image-repository: ${{ vars.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}
           image-tag: ${{ needs.docker.outputs.image-tag }}
-          kubectl-version: v1.28.0
+          kubectl-version: v1.33.0
           helm-version: v3.14.0
           timeout: 5m
           verify-deployment: 'true'

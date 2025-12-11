@@ -79,6 +79,13 @@ runs:
         echo "Using namespace: ${{ inputs.namespace }}"
         kubectl create namespace ${{ inputs.namespace }} --dry-run=client -o yaml | kubectl apply -f -
 
+    - name: Validate Helm chart
+      shell: bash
+      run: |
+        echo "Validating Helm chart..."
+        helm lint ${{ inputs.chart-path }}
+        echo "Chart validation passed"
+
     - name: Deploy with Helm
       shell: bash
       run: |
@@ -86,21 +93,26 @@ runs:
         echo "Image: ${{ inputs.image-repository }}:${{ inputs.image-tag }}"
         echo "Namespace: ${{ inputs.namespace }}"
 
-        HELM_CMD="helm upgrade --install ${{ inputs.release-name }} ${{ inputs.chart-path }} \
-          --namespace ${{ inputs.namespace }} \
-          --set image.repository=${{ inputs.image-repository }} \
-          --set image.tag=${{ inputs.image-tag }} \
-          --wait \
-          --timeout ${{ inputs.timeout }} \
-          --atomic"
+        # Build Helm arguments array
+        HELM_ARGS=(
+          "upgrade" "--install"
+          "${{ inputs.release-name }}"
+          "${{ inputs.chart-path }}"
+          "--namespace" "${{ inputs.namespace }}"
+          "--set" "image.repository=${{ inputs.image-repository }}"
+          "--set" "image.tag=${{ inputs.image-tag }}"
+          "--wait"
+          "--timeout" "${{ inputs.timeout }}"
+          "--atomic"
+        )
 
         # Add values file if provided
         if [ -n "${{ inputs.values-file }}" ]; then
-          HELM_CMD="$HELM_CMD --values ${{ inputs.values-file }}"
+          HELM_ARGS+=("--values" "${{ inputs.values-file }}")
         fi
 
         # Execute Helm command
-        eval $HELM_CMD
+        helm "${HELM_ARGS[@]}"
 
     - name: Verify deployment
       if: inputs.verify-deployment == 'true'
