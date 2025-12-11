@@ -1,0 +1,16 @@
+apiVersion: v2
+name: web-app
+description: A Helm chart for deploying Go Gin web application to EKS
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+keywords:
+  - go
+  - gin
+  - web-app
+  - eks
+maintainers:
+  - name: DevOps Team
+home: https://github.com/daylook/trial-task
+sources:
+  - https://github.com/daylook/trial-task/tree/main/web-app
