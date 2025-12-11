@@ -1,0 +1,115 @@
+name: 'EKS Helm Deploy'
+description: 'Deploy application to EKS cluster using Helm'
+
+inputs:
+  cluster-name:
+    description: 'EKS cluster name'
+    required: true
+  aws-region:
+    description: 'AWS region'
+    required: true
+  release-name:
+    description: 'Helm release name'
+    required: true
+  chart-path:
+    description: 'Path to Helm chart'
+    required: true
+  namespace:
+    description: 'Kubernetes namespace'
+    required: true
+  values-file:
+    description: 'Path to Helm values file'
+    required: false
+    default: ''
+  image-repository:
+    description: 'Docker image repository'
+    required: true
+  image-tag:
+    description: 'Docker image tag'
+    required: true
+  kubectl-version:
+    description: 'kubectl version to install'
+    required: false
+    default: 'v1.28.0'
+  helm-version:
+    description: 'Helm version to install'
+    required: false
+    default: 'v3.14.0'
+  timeout:
+    description: 'Helm deployment timeout'
+    required: false
+    default: '5m'
+  verify-deployment:
+    description: 'Verify deployment rollout status'
+    required: false
+    default: 'true'
+  deployment-name:
+    description: 'Name of the deployment to verify (if different from release)'
+    required: false
+    default: ''
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install kubectl
+      uses: azure/setup-kubectl@v4
+      with:
+        version: ${{ inputs.kubectl-version }}
+
+    - name: Install Helm
+      uses: azure/setup-helm@v4
+      with:
+        version: ${{ inputs.helm-version }}
+
+    - name: Update kubeconfig
+      shell: bash
+      run: |
+        aws eks update-kubeconfig --name ${{ inputs.cluster-name }} --region ${{ inputs.aws-region }}
+
+    - name: Verify cluster connection
+      shell: bash
+      run: |
+        echo "Verifying EKS cluster connection..."
+        kubectl cluster-info
+        kubectl get nodes
+
+    - name: Create namespace if not exists
+      shell: bash
+      run: |
+        echo "Using namespace: ${{ inputs.namespace }}"
+        kubectl create namespace ${{ inputs.namespace }} --dry-run=client -o yaml | kubectl apply -f -
+
+    - name: Deploy with Helm
+      shell: bash
+      run: |
+        echo "Deploying ${{ inputs.release-name }} with Helm..."
+        echo "Image: ${{ inputs.image-repository }}:${{ inputs.image-tag }}"
+        echo "Namespace: ${{ inputs.namespace }}"
+
+        HELM_CMD="helm upgrade --install ${{ inputs.release-name }} ${{ inputs.chart-path }} \
+          --namespace ${{ inputs.namespace }} \
+          --set image.repository=${{ inputs.image-repository }} \
+          --set image.tag=${{ inputs.image-tag }} \
+          --wait \
+          --timeout ${{ inputs.timeout }} \
+          --atomic"
+
+        # Add values file if provided
+        if [ -n "${{ inputs.values-file }}" ]; then
+          HELM_CMD="$HELM_CMD --values ${{ inputs.values-file }}"
+        fi
+
+        # Execute Helm command
+        eval $HELM_CMD
+
+    - name: Verify deployment
+      if: inputs.verify-deployment == 'true'
+      shell: bash
+      run: |
+        echo "Verifying deployment..."
+        DEPLOYMENT_NAME="${{ inputs.deployment-name }}"
+        if [ -z "$DEPLOYMENT_NAME" ]; then
+          DEPLOYMENT_NAME="${{ inputs.release-name }}"
+        fi
+        kubectl rollout status deployment/$DEPLOYMENT_NAME -n ${{ inputs.namespace }} --timeout=300s
+        echo "Deployment successful"

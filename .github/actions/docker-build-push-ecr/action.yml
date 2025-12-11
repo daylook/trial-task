@@ -1,0 +1,94 @@
+name: 'Docker Build and Push to ECR'
+description: 'Build Docker image and push to Amazon ECR with multiple tags'
+
+inputs:
+  ecr-repository:
+    description: 'ECR repository name'
+    required: true
+  working-directory:
+    description: 'Working directory containing Dockerfile'
+    required: true
+  image-tag:
+    description: 'Primary image tag (e.g., git SHA)'
+    required: true
+  additional-tags:
+    description: 'Comma-separated additional tags (e.g., main,latest)'
+    required: false
+    default: 'latest'
+  artifact-name:
+    description: 'Name of the binary artifact to download'
+    required: false
+    default: ''
+
+outputs:
+  image-tag:
+    description: 'Primary image tag used'
+    value: ${{ steps.set-outputs.outputs.image-tag }}
+  image-uri:
+    description: 'Full image URI with tag'
+    value: ${{ steps.set-outputs.outputs.image-uri }}
+  ecr-registry:
+    description: 'ECR registry URL'
+    value: ${{ steps.login-ecr.outputs.registry }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Download binary artifact
+      if: inputs.artifact-name != ''
+      uses: actions/download-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ inputs.working-directory }}
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build and push Docker image to ECR
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        ECR_REPOSITORY: ${{ inputs.ecr-repository }}
+        IMAGE_TAG: ${{ inputs.image-tag }}
+      run: |
+        # Build with primary tag
+        TAGS="-t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+
+        # Add additional tags
+        IFS=',' read -ra ADDITIONAL_TAGS <<< "${{ inputs.additional-tags }}"
+        for tag in "${ADDITIONAL_TAGS[@]}"; do
+          tag=$(echo "$tag" | xargs)  # Trim whitespace
+          if [ -n "$tag" ]; then
+            TAGS="$TAGS -t $ECR_REGISTRY/$ECR_REPOSITORY:$tag"
+          fi
+        done
+
+        # Build the image
+        docker build $TAGS -f Dockerfile .
+
+        # Push all tags
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+        for tag in "${ADDITIONAL_TAGS[@]}"; do
+          tag=$(echo "$tag" | xargs)
+          if [ -n "$tag" ]; then
+            docker push $ECR_REGISTRY/$ECR_REPOSITORY:$tag
+          fi
+        done
+
+        echo "Image pushed: $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+
+    - name: Set outputs
+      id: set-outputs
+      shell: bash
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        ECR_REPOSITORY: ${{ inputs.ecr-repository }}
+        IMAGE_TAG: ${{ inputs.image-tag }}
+      run: |
+        echo "image-tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+        echo "image-uri=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT

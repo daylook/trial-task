@@ -1,0 +1,127 @@
+name: Build and Deploy Web App
+
+on:
+  workflow_dispatch:
+  push:
+    # change the branch from main to prevent running the workflow on pushes to main
+    branches: [ no-run ]
+    paths:
+      - 'web-app/**'
+      - 'helm/web-app/**'
+      - '.github/workflows/**'
+  pull_request:
+    branches: [ no-run ]
+    paths:
+      - 'web-app/**'
+      - 'helm/web-app/**'
+      - '.github/workflows/**'
+
+env:
+  GO_VERSION: '1.23'
+  AWS_REGION: eu-central-1 # could be defined as gh variable
+  EKS_CLUSTER_NAME: eks-cluster # could be defined as gh variable
+  ECR_REPOSITORY: web-app # could be defined as gh variable
+  AWS_IAM_ROLE_ARN: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/GitHubActionsTerraformRole
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      web-app: ${{ steps.filter.outputs.web-app }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check for web-app changes
+        uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            web-app:
+              - 'web-app/**'
+              - 'helm/web-app/**'
+              - '.github/workflows/**'
+
+  ## Build and test code
+  build-and-test:
+    needs: changes
+    if: ${{ needs.changes.outputs.web-app == 'true' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build and test Go application
+        uses: ./.github/actions/go-build-test
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          working-directory: web-app
+          upload-coverage: 'true'
+          artifact-name: web-app-binary
+          binary-output: app
+
+  ## Build and Push Docker Image to ECR
+  docker:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write  # Required for AWS OIDC
+      contents: read
+    outputs:
+      image-tag: ${{ steps.docker-push.outputs.image-tag }}
+      image-uri: ${{ steps.docker-push.outputs.image-uri }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Build and push Docker image
+        id: docker-push
+        uses: ./.github/actions/docker-build-push-ecr
+        with:
+          ecr-repository: ${{ env.ECR_REPOSITORY }}
+          working-directory: web-app
+          image-tag: ${{ github.sha }}
+          additional-tags: ${{ github.ref_name }},latest
+          artifact-name: web-app-binary
+
+  ## Deploy to EKS with Helm
+  deploy:
+    needs: docker
+    runs-on: ubuntu-latest
+    # Only deploy on push to main branch (not on PRs)
+    if: github.event_name == 'push' && github.ref_name == 'main'
+    permissions:
+      id-token: write  # Required for AWS OIDC
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: ./.github/actions/configure-aws-credentials
+        with:
+          role-arn: ${{ env.AWS_IAM_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          session-name: GitHubActionsEKSDeploySession
+
+      - name: Deploy to EKS with Helm
+        uses: ./.github/actions/eks-helm-deploy
+        with:
+          cluster-name: ${{ env.EKS_CLUSTER_NAME }}
+          aws-region: ${{ env.AWS_REGION }}
+          release-name: web-app
+          chart-path: ./helm/web-app
+          namespace: production
+          values-file: ./helm/web-app/values-production.yaml
+          image-repository: ${{ vars.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}
+          image-tag: ${{ needs.docker.outputs.image-tag }}
+          kubectl-version: v1.28.0
+          helm-version: v3.14.0
+          timeout: 5m
+          verify-deployment: 'true'
+          deployment-name: web-app-web-app

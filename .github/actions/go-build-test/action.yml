@@ -1,0 +1,83 @@
+name: 'Go Build and Test'
+description: 'Build, test, and lint Go application with coverage reporting'
+
+inputs:
+  go-version:
+    description: 'Go version to use'
+    required: true
+  working-directory:
+    description: 'Working directory for the Go project'
+    required: true
+  upload-coverage:
+    description: 'Upload coverage to Codecov'
+    required: false
+    default: 'true'
+  artifact-name:
+    description: 'Name for the binary artifact'
+    required: false
+    default: 'app-binary'
+  binary-output:
+    description: 'Output path for the compiled binary'
+    required: false
+    default: 'app'
+
+outputs:
+  binary-path:
+    description: 'Path to the compiled binary'
+    value: ${{ steps.set-outputs.outputs.binary-path }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: ${{ inputs.go-version }}
+        cache-dependency-path: ${{ inputs.working-directory }}/go.sum
+
+    - name: Download Go modules
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: go mod download
+
+    - name: Lint Code
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.61.0
+        golangci-lint run --timeout=5m
+
+    - name: Run Tests and Generate Coverage
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        go test -race -coverprofile=coverage.out -covermode=atomic ./...
+        go tool cover -func=coverage.out
+
+    - name: Upload coverage to Codecov
+      if: inputs.upload-coverage == 'true'
+      uses: codecov/codecov-action@v4
+      with:
+        files: ./${{ inputs.working-directory }}/coverage.out
+        flags: unittests
+        name: codecov-umbrella
+        fail_ci_if_error: false
+
+    - name: Build binary
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o ${{ inputs.binary-output }} ./cmd/main.go
+
+    - name: Upload compiled binary artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ inputs.working-directory }}/${{ inputs.binary-output }}
+        retention-days: 1
+
+    - name: Set outputs
+      id: set-outputs
+      shell: bash
+      run: |
+        echo "binary-path=${{ inputs.working-directory }}/${{ inputs.binary-output }}" >> $GITHUB_OUTPUT
