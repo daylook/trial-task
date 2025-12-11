@@ -52,6 +52,9 @@ ingress:
   tls: []
 
 
+# Resource requests and limits for the container
+# Requests: Guaranteed resources allocated to the pod
+# Limits: Maximum resources the pod can consume
 resources:
   limits:
     cpu: 500m
@@ -84,6 +87,22 @@ autoscaling:
         periodSeconds: 30
       selectPolicy: Max
 
+# Startup Probe: Checks if the application has started
+# Used for slow-starting containers to prevent premature liveness/readiness checks
+# Kubernetes will wait for this to succeed before checking liveness/readiness
+startupProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  initialDelaySeconds: 0
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 30  # 30 * 10s = 5 minutes max startup time
+  successThreshold: 1
+
+# Liveness Probe: Checks if the application is running
+# If this fails, Kubernetes will restart the container
+# Use this to detect and recover from deadlocks or unrecoverable errors
 livenessProbe:
   httpGet:
     path: /healthz
@@ -92,15 +111,20 @@ livenessProbe:
   periodSeconds: 10
   timeoutSeconds: 5
   failureThreshold: 3
+  successThreshold: 1
 
+# Readiness Probe: Checks if the application is ready to serve traffic
+# If this fails, the pod is removed from service endpoints (no traffic sent)
+# Use this to temporarily stop traffic during brief unavailability
 readinessProbe:
   httpGet:
-    path: /healthz
+    path: /ready
     port: http
   initialDelaySeconds: 5
   periodSeconds: 5
   timeoutSeconds: 3
   failureThreshold: 3
+  successThreshold: 1
 
 nodeSelector: {}
 
